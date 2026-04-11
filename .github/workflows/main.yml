@@ -1,0 +1,29 @@
+name: Daily Trading Bot
+
+on:
+  schedule:
+    # ตั้งเวลารันตอน 03:00 น. เวลาไทย (UTC คือ 20:00) รันทุกวันอังคาร-เสาร์ (ครอบคลุมตลาดเปิด จ-ศ)
+    - cron: '0 20 * * 1-5'
+  workflow_dispatch: # ปุ่มนี้เอาไว้กดรันแบบ Manual ได้เองด้วย
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install alpaca-trade-api yfinance pandas numpy xgboost scikit-learn joblib
+
+      - name: Run Trading Bot
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python bot.py
