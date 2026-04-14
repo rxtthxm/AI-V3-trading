@@ -15,13 +15,18 @@ BASE_URL = 'https://paper-api.alpaca.markets'
 api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
 
 try:
-    model_bull = joblib.load('model_bull.joblib')
-    model_bear = joblib.load('model_bear.joblib')
+    model_bull = joblib.load('champion_v33_bull.joblib')
+    model_bear = joblib.load('champion_v33_bear.joblib')
 except Exception as e:
     print(f"❌ โหลดโมเดลไม่สำเร็จ: {e}")
     exit()
 
-WATCHLIST = ['PLTR', 'AMD', 'TSM', 'MU', 'NVDA', 'META', 'NFLX', 'ASML', 'GOOGL', 'AAPL', 'MSFT', 'AMZN', 'TSLA', 'CRWD', 'AVGO']
+WATCHLIST = [
+    'NVDA', 'META', 'TSLA', 'AMD', 'MU', 'PLTR',
+    'LRCX', 'AMAT', 'CRM', 'UBER',
+    'GOOGL', 'AMZN', 'MSFT', 'AVGO', 'AAPL', 'ORCL',
+    'TXN', 'ADI', 'MRVL', 'NET', 'ON', 'MCHP'
+]
 THRESHOLD = 0.70
 MAX_CAPITAL_PER_STOCK = 5000
 
