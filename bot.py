@@ -120,6 +120,11 @@ def run_bot():
                     api.submit_order(symbol=symbol, qty=qty, side='sell', type='market', time_in_force='day')
                 continue
 
+            open_orders = [o.symbol for o in api.list_orders(status='open')]
+                if symbol in open_orders:
+                continue
+
+
             if latest['EMA_5'] > latest['EMA_13']:
                 features = ['Price_vs_SMA20', 'OBV_Slope', 'ATR', 'Regime', 'Divergence_Factor', 'Upper_Wick_Ratio', 'Yield10Y', 'VIX']
                 X_live = pd.DataFrame([latest[features]])
