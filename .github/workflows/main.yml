@@ -2,11 +2,11 @@ name: Daily Trading Bot
 
 on:
   schedule:
-    # รันตอน 19:50 UTC (02:50 น. ไทย) - สำหรับช่วงฤดูร้อน
     - cron: '50 19 * * 1-5'
-    # รันตอน 20:50 UTC (03:50 น. ไทย) - สำหรับช่วงฤดูหนาว
     - cron: '50 20 * * 1-5'
-  workflow_dispatch: # ปุ่มกดรันเอง Manual
+    - cron: '35 13 * * 1-5'
+    - cron: '35 14 * * 1-5'
+  workflow_dispatch:
 
 jobs:
   run-bot:
@@ -22,11 +22,18 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          # เพิ่ม pytz เข้าไปในรายการติดตั้งด้านล่างนี้
-          pip install alpaca-trade-api yfinance pandas numpy xgboost scikit-learn joblib pytz
+          pip install alpaca-trade-api yfinance pandas numpy xgboost scikit-learn joblib pytz requests gspread google-auth
 
-      - name: Run Trading Bot
+      - name: Run Bot
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_PRIVATE_KEY_ID: ${{ secrets.GCP_PRIVATE_KEY_ID }}
+          GCP_PRIVATE_KEY: ${{ secrets.GCP_PRIVATE_KEY }}
+          GCP_CLIENT_EMAIL: ${{ secrets.GCP_CLIENT_EMAIL }}
+          GCP_CLIENT_ID: ${{ secrets.GCP_CLIENT_ID }}
+          GCP_CLIENT_CERT_URL: ${{ secrets.GCP_CLIENT_CERT_URL }}
         run: python bot.py
