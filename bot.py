@@ -101,13 +101,27 @@ def is_bear_market(macro_raw):
     return (spy.iloc[-1] < sma200) or (vix_now > 25) or (spy_drop < -0.07)
 
 def get_market_phase():
-    tz_ny  = pytz.timezone('America/New_York')
+    tz_ny = pytz.timezone('America/New_York')
     now_ny = datetime.now(tz_ny)
-    h, m   = now_ny.hour, now_ny.minute
-    print(f"🕒 NY: {now_ny.strftime('%H:%M:%S')}")
-    if h == 15 and m >= 50: return 'scanner'
-    if h == 9  and 30 <= m <= 45: return 'executor'
+    h, m = now_ny.hour, now_ny.minute
+    print(f"🗽 เวลาปัจจุบันของ NY: {now_ny.strftime('%H:%M:%S')}")
+    
+    # เช็คว่าเป็นการกดปุ่มรันด้วยมือ (Manual) บน GitHub Actions หรือไม่
+    # ถ้ากดด้วยมือ เราจะบังคับให้รันเป็นโหมด Scanner เพื่อให้ทดสอบได้ทันที
+    if os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch':
+        print("🛠️ ตรวจพบการกดปุ่มรันด้วยมือ (Manual Test) -> บังคับเข้าโหมด Scanner")
+        return 'scanner' # หรือเปลี่ยนเป็น 'executor' ถ้าอยากทดสอบฝั่งซื้อขาย
+        
+    # โหมด Scanner: ช่วงก่อนปิดตลาด (ขยายเวลาเผื่อ Server ดีเลย์เป็น 15:50 ถึง 16:15)
+    if (h == 15 and m >= 50) or (h == 16 and m <= 15): 
+        return 'scanner'
+        
+    # โหมด Executor: ช่วงเปิดตลาด (ขยายเวลาเผื่อ Server ดีเลย์เป็น 09:30 ถึง 09:55)
+    if h == 9 and 30 <= m <= 55: 
+        return 'executor'
+        
     return 'none'
+
 
 def get_risk_tier(prob):
     if prob >= 0.90: return ACCOUNT_RISK['tier3']
