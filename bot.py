@@ -160,6 +160,7 @@ for position in positions:
             sell_log.append(f"🔴 SELL {symbol}: {reason}")
 
 # ---------------------------------------------------------
+# ---------------------------------------------------------
 # STEP B: AI ENTRY & COOLDOWN (ค้นหาหุ้นเข้าซื้อ)
 # ---------------------------------------------------------
 for symbol in WATCHLIST:
@@ -170,16 +171,18 @@ for symbol in WATCHLIST:
     if df is None: continue
     latest = df.iloc[-1]
     
-    # 1. คำนวณ Features และให้ AI ทำนาย (แทนที่ด้วย Feature จริงของคุณ)
-    # features = ['Price_vs_SMA20', 'OBV_Slope', 'ATR', 'Regime', 'Divergence_Factor', 'Upper_Wick_Ratio', 'Yield10Y', 'VIX']
-    # X_live = pd.DataFrame([latest[features]])
-    # สมมติการดึง AI Prob:
-    # ai_prob = model.predict_proba(X_live)[:, 1][0]
-    
-    ai_prob = 0.65 # ตัวอย่าง (คุณต้องเอาบรรทัดที่คอมเมนต์ด้านบนมาใช้)
+    # --- 1. สมอง AI ของจริง (เอาบรรทัด 0.65 ออกแล้วใช้ของจริง) ---
+    try:
+        features = ['Price_vs_SMA20', 'OBV_Slope', 'ATR', 'Regime', 'Divergence_Factor', 'Upper_Wick_Ratio', 'Yield10Y', 'VIX']
+        X_live = pd.DataFrame([latest[features]])
+        ai_prob = model.predict_proba(X_live)[:, 1][0]
+    except KeyError as e:
+        print(f"⚠️ คำนวณข้าม {symbol} เนื่องจากขาดข้อมูล Indicator: {e}")
+        continue
+    # --------------------------------------------------------
 
     if ai_prob >= 0.60:
-        # 2. COOLDOWN FILTER (เช็คว่าเพิ่งคัทลอสไปหรือไม่)
+        # 2. COOLDOWN FILTER
         recent_orders = api.list_orders(status='filled', symbols=[symbol], limit=10)
         sell_orders = [o for o in recent_orders if o.side == 'sell']
         
@@ -195,9 +198,15 @@ for symbol in WATCHLIST:
             shares = calculate_shares(account_equity, ai_prob, latest['ATR'].item(), latest['Close'].item())
             if shares > 0:
                 tier = "🔥🔥🔥" if ai_prob >= 0.90 else "🔥🔥" if ai_prob >= 0.75 else "🔥"
-                print(f"{tier} สั่งซื้อ {symbol} จำนวน {shares} หุ้น (AI {ai_prob*100:.1f}%)")
-                api.submit_order(symbol=symbol, qty=shares, side='buy', type='market', time_in_force='day')
-                buy_log.append(f"🟢 BUY {symbol} x{shares} ({tier} AI: {ai_prob*100:.1f}%)")
+                
+                # --- 3. ใส่ระบบกันกระแทก (Try...Except) ป้องกันเงินหมดพอร์ตแล้วแครช ---
+                try:
+                    api.submit_order(symbol=symbol, qty=shares, side='buy', type='market', time_in_force='day')
+                    print(f"{tier} สั่งซื้อ {symbol} จำนวน {shares} หุ้น (AI {ai_prob*100:.1f}%)")
+                    buy_log.append(f"🟢 BUY {symbol} x{shares} ({tier} AI: {ai_prob*100:.1f}%)")
+                except Exception as e:
+                    print(f"❌ ข้าม {symbol} สั่งซื้อไม่สำเร็จ (เงินอาจจะหมดพอร์ต): {e}")
+                # ------------------------------------------------------------------
 
 # ==========================================
 # 5. SUMMARY NOTIFICATION
