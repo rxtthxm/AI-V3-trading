@@ -32,10 +32,11 @@ except Exception as e:
     exit()
 
 WATCHLIST = [
-    'NVDA', 'META', 'TSLA', 'AMD', 'MU', 'PLTR',
-    'LRCX', 'AMAT', 'CRM', 'UBER', 'GOOGL', 'AMZN',
-    'MSFT', 'AVGO', 'AAPL', 'ORCL', 'TXN', 'ADI',
-    'MRVL', 'NET', 'ON', 'MCHP', 'TSM'
+    'NVDA', 'META', 'TSLA', 'AMD', 'MU', 'PLTR', 
+    'LRCX', 'AMAT', 'CRM', 'UBER', 
+    'GOOGL', 'AMZN', 'MSFT', 'AVGO', 'AAPL', 'ORCL', 
+    'TXN', 'ADI', 'MRVL', 'NET', 'ON', 'MCHP', 'TSM', 
+    'ASML', 'QCOM', 'ARM', 'PANW', 'SNOW', 'DDOG', 'NOW'
 ]
 
 # ==========================================
