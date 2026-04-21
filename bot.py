@@ -25,8 +25,8 @@ TG_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
 
 try:
-    model_bull = joblib.load('final_strategy_bull.joblib')
-    model_bear = joblib.load('final_strategy_bear.joblib')
+    model_bull = joblib.load('model_bull.joblib')
+    model_bear = joblib.load('model_bear.joblib')
 except Exception as e:
     print(f"❌ Model load failed: {e}")
     exit()
