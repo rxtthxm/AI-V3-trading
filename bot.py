@@ -79,13 +79,15 @@ print(f"Market Regime: {regime_label}")
 positions = api.list_positions()
 open_symbols = [p.symbol for p in positions]
 open_orders = api.list_orders(status='open')
-open_sell_symbols = [o.symbol for o in open_orders if o.side == 'sell']
+open_trailing = [o.symbol for o in open_orders 
+                 if o.side == 'sell' and o.type == 'trailing_stop']
+
 
 for position in positions:
     symbol = position.symbol
     qty = position.qty
     
-    if symbol not in open_sell_symbols:
+    if symbol not in open_trailing:
         df = get_latest_data(symbol)
         if df is None: continue
         latest = df.iloc[-1]
