@@ -6,167 +6,276 @@ import numpy as np
 import joblib
 import os
 import pytz
-import requests
-import gspread
-from google.oauth2.service_account import Credentials
 import warnings
-
 warnings.filterwarnings('ignore')
 
-API_KEY = os.environ.get('ALPACA_API_KEY')
+API_KEY    = os.environ.get('ALPACA_API_KEY')
 API_SECRET = os.environ.get('ALPACA_SECRET_KEY')
-BASE_URL = 'https://paper-api.alpaca.markets'
-TG_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-TG_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
-
-api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
+BASE_URL   = 'https://paper-api.alpaca.markets'
+api        = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
 
 try:
     model_bull = joblib.load('model_bull.joblib')
     model_bear = joblib.load('model_bear.joblib')
 except Exception as e:
-    print(f"Model load failed: {e}")
+    print(f"❌ โหลดโมเดลไม่สำเร็จ: {e}")
     exit()
 
 WATCHLIST = [
-    'NVDA', 'META', 'TSLA', 'AMD', 'MU', 'PLTR', 
-    'LRCX', 'AMAT', 'CRM', 'UBER', 
-    'GOOGL', 'AMZN', 'MSFT', 'AVGO', 'AAPL', 'ORCL', 
-    'TXN', 'ADI', 'MRVL', 'NET', 'ON', 'MCHP', 'TSM', 
-    'ASML', 'QCOM', 'ARM', 'PANW', 'SNOW', 'DDOG', 'NOW'
+    'NVDA', 'META', 'TSLA', 'AMD', 'MU', 'PLTR',
+    'LRCX', 'AMAT', 'CRM', 'UBER',
+    'GOOGL', 'AMZN', 'MSFT', 'AVGO', 'AAPL', 'ORCL',
+    'TXN', 'ADI', 'MRVL', 'NET', 'ON', 'MCHP', 'TSM'
 ]
 
-def send_telegram(message):
-    if TG_TOKEN and TG_CHAT_ID:
-        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-        requests.post(url, data={'chat_id': TG_CHAT_ID, 'text': message, 'parse_mode': 'HTML'})
+ATR_MULTIPLIER        = 2.1    # stop distance
+ATR_TARGET_MULTIPLIER = 3.0    # target = entry + 3×ATR risk
+PARTIAL_EXIT_RATIO    = 0.5    # ขายครึ่งนึงเมื่อถึง target
 
-def get_latest_data(symbol):
-    df = yf.download(symbol, period='1y', interval='1d', progress=False)
-    if df.empty: return None
-    
-    df['ATR'] = df['High'].sub(df['Low']).rolling(14).mean()
-    df['EMA_5'] = df['Close'].ewm(span=5, adjust=False).mean()
-    df['EMA_13'] = df['Close'].ewm(span=13, adjust=False).mean()
-    
-    return df
+ACCOUNT_RISK_PER_TRADE = {
+    'tier1': 0.01,
+    'tier2': 0.02,
+    'tier3': 0.03,
+}
 
-def calculate_shares(equity, prob, atr, price):
-    risk_pct = 0.03 if prob >= 0.90 else 0.02 if prob >= 0.75 else 0.01
-    risk_amount = equity * risk_pct
-    stop_distance = 2.1 * atr
-    if stop_distance <= 0: return 0
-    shares = int(risk_amount / stop_distance)
-    max_shares = int((equity * 0.20) / price)
+# ── ฟังก์ชันช่วย ───────────────────────────────────────────
+
+def is_market_closing_soon():
+    tz_ny        = pytz.timezone('America/New_York')
+    now_ny       = datetime.now(tz_ny)
+    market_close = now_ny.replace(hour=16, minute=0, second=0, microsecond=0)
+    diff_minutes = (market_close - now_ny).total_seconds() / 60
+    print(f"🕒 เวลาที่ New York: {now_ny.strftime('%H:%M:%S')}")
+    print(f"⏳ เหลืออีก {diff_minutes:.2f} นาทีก่อนตลาดปิด")
+    return 0 <= diff_minutes <= 20
+
+def get_risk_tier(ai_prob):
+    if ai_prob >= 0.90: return ACCOUNT_RISK_PER_TRADE['tier3']
+    if ai_prob >= 0.75: return ACCOUNT_RISK_PER_TRADE['tier2']
+    if ai_prob >= 0.60: return ACCOUNT_RISK_PER_TRADE['tier1']
+    return 0
+
+def calculate_shares(account_equity, ai_prob, atr, price):
+    risk_pct      = get_risk_tier(ai_prob)
+    if risk_pct == 0: return 0
+    risk_amount   = account_equity * risk_pct
+    stop_distance = ATR_MULTIPLIER * atr
+    shares        = int(risk_amount // stop_distance)
+    max_shares    = int((account_equity * 0.20) // price)
     return min(shares, max_shares)
 
-account = api.get_account()
-account_equity = float(account.equity)
-print(f"Equity: ${account_equity:,.2f}")
-
-buy_log = []
-sell_log = []
-
-spy = yf.download('SPY', period='3mo', progress=False)
-spy['EMA_20'] = spy['Close'].ewm(span=20).mean()
-spy['EMA_50'] = spy['Close'].ewm(span=50).mean()
-is_bull_market = spy['EMA_20'].iloc[-1].item() > spy['EMA_50'].iloc[-1].item()
-regime_label = "BULL" if is_bull_market else "BEAR"
-model = model_bull if is_bull_market else model_bear
-
-print(f"Market Regime: {regime_label}")
-
-positions = api.list_positions()
-open_symbols = [p.symbol for p in positions]
-open_orders = api.list_orders(status='open')
-open_trailing = [o.symbol for o in open_orders 
-                 if o.side == 'sell' and o.type == 'trailing_stop']
-
-
-for position in positions:
-    symbol = position.symbol
-    qty = position.qty
-    
-    if symbol not in open_trailing:
-        df = get_latest_data(symbol)
-        if df is None: continue
-        latest = df.iloc[-1]
-        
-        trail_amount = round(2.1 * latest['ATR'].item(), 2)
-        
-        try:
-            api.submit_order(
-                symbol=symbol,
-                qty=qty,
-                side='sell',
-                type='trailing_stop',
-                time_in_force='gtc',
-                trail_price=trail_amount
-            )
-            print(f"Trailing Stop {symbol}: ${trail_amount}")
-            sell_log.append(f"🛡️ TRAILING STOP {symbol}: ${trail_amount}")
-        except Exception as e:
-            print(f"Trailing Stop error {symbol}: {e}")
-
-for symbol in WATCHLIST:
-    if symbol in open_symbols:
-        continue
-        
-    df = get_latest_data(symbol)
-    if df is None: continue
-    latest = df.iloc[-1]
-    
+def get_position_tags(symbol):
+    """
+    ดึง metadata ของ position จาก Alpaca position comment
+    ใช้เก็บ: target price, partial_done flag
+    format: "target=123.45,partial=0"
+    """
     try:
-        features = ['Price_vs_SMA20', 'OBV_Slope', 'ATR', 'Regime', 'Divergence_Factor', 'Upper_Wick_Ratio', 'Yield10Y', 'VIX']
-        X_live = pd.DataFrame([latest[features]])
-        ai_prob = model.predict_proba(X_live)[:, 1][0]
-    except KeyError as e:
-        print(f"Skip {symbol}: {e}")
-        continue
+        pos = api.get_position(symbol)
+        # Alpaca ไม่มี custom tag — ใช้ client_order_id ของ buy order แทน
+        # วิธีง่ายที่สุด: คำนวณ target จาก avg_entry + 3×ATR ทุกรอบ
+        return float(pos.avg_entry_price), float(pos.qty)
+    except:
+        return None, None
 
-    if ai_prob >= 0.60:
-        recent_orders = api.list_orders(status='filled', symbols=[symbol], limit=10)
-        sell_orders = [o for o in recent_orders if o.side == 'sell']
-        
-        cooldown_active = False
-        if sell_orders:
-            last_sell_date = sell_orders[0].filled_at
-            now_utc = datetime.now(pytz.utc)
-            if (now_utc - last_sell_date).days <= 1:
-                print(f"Cooldown {symbol}")
-                cooldown_active = True
-                
-        if not cooldown_active:
-            shares = calculate_shares(account_equity, ai_prob, latest['ATR'].item(), latest['Close'].item())
-            if shares > 0:
-                tier = "🔥🔥🔥" if ai_prob >= 0.90 else "🔥🔥" if ai_prob >= 0.75 else "🔥"
-                target_price = round(latest['Close'].item() * 1.002, 2)
-                
-                try:
+def already_partial_sold(symbol):
+    """
+    เช็คว่าเคย partial sell ไปแล้วไหม
+    โดยดูจาก filled orders ของวันนี้
+    """
+    try:
+        today = datetime.now(pytz.timezone('America/New_York')).strftime('%Y-%m-%d')
+        orders = api.list_orders(
+            status    = 'filled',
+            after     = f"{today}T00:00:00-04:00",
+            direction = 'asc',
+            limit     = 100,
+        )
+        for o in orders:
+            if o.symbol == symbol and o.side == 'sell':
+                if hasattr(o, 'client_order_id') and 'partial_target' in (o.client_order_id or ''):
+                    return True
+        return False
+    except:
+        return False
+
+# ── Main bot ───────────────────────────────────────────────
+
+def run_bot():
+    if not is_market_closing_soon():
+        print("🛑 ยังไม่ถึงช่วง 20 นาทีสุดท้ายก่อนตลาดปิด… บอทขอนั่งทับมือรอรอบถัดไป!")
+        return
+
+    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🚀 สตาร์ทเครื่องลุยตลาดช่วงโค้งสุดท้าย...")
+
+    account        = api.get_account()
+    account_equity = float(account.equity)
+    print(f"💰 Portfolio Equity: ${account_equity:,.2f}")
+
+    open_orders = [o.symbol for o in api.list_orders(status='open')]
+
+    end_date   = datetime.today().strftime('%Y-%m-%d')
+    start_date = (datetime.today() - timedelta(days=365)).strftime('%Y-%m-%d')
+
+    # Macro data
+    macro_tickers = ['^VIX', '^TNX', 'SPY']
+    macro_raw     = yf.download(macro_tickers, start=start_date, end=end_date, progress=False)['Close']
+    macro_raw.columns = ['SPY', 'VIX', 'Yield10Y']
+
+    macro_data               = pd.DataFrame(index=macro_raw.index)
+    macro_data['VIX']        = macro_raw['VIX']
+    macro_data['Yield10Y']   = macro_raw['Yield10Y']
+    macro_data['VIX_ROC']    = macro_raw['VIX'].pct_change(5)
+    macro_data['SPY_MOM_5']  = macro_raw['SPY'].pct_change(5)
+    macro_data['SPY_MOM_20'] = macro_raw['SPY'].pct_change(20)
+    macro_data['SPY_Regime'] = (macro_raw['SPY'].pct_change(60) > 0).astype(int)
+
+    latest_macro  = macro_data.iloc[-1]
+    is_bull       = latest_macro['SPY_Regime'] == 1
+    model         = model_bull if is_bull else model_bear
+    regime_label  = "BULL 🐂" if is_bull else "BEAR 🐻"
+    print(f"📊 Regime ปัจจุบัน: {regime_label}")
+
+    for symbol in WATCHLIST:
+        try:
+            if symbol in open_orders:
+                print(f"⏭️ {symbol} มี order ค้างอยู่ ข้ามไป")
+                continue
+
+            # เช็ค position
+            try:
+                position      = api.get_position(symbol)
+                qty           = float(position.qty)
+                avg_entry     = float(position.avg_entry_price)
+                is_holding    = True
+            except:
+                is_holding    = False
+
+            # คำนวณ indicators
+            raw = yf.download(symbol, start=start_date, end=end_date, progress=False)
+            if raw.empty:
+                continue
+            if isinstance(raw.columns, pd.MultiIndex):
+                raw.columns = raw.columns.droplevel(1)
+
+            df = pd.DataFrame(index=raw.index)
+            c  = raw['Close']
+            h  = raw['High']
+            l  = raw['Low']
+            o  = raw['Open']
+            v  = raw['Volume']
+
+            df['Close']          = c
+            df['Price_vs_SMA20'] = c - c.rolling(window=20).mean()
+
+            tr          = pd.concat([h - l,
+                                     (h - c.shift(1)).abs(),
+                                     (l - c.shift(1)).abs()], axis=1).max(axis=1)
+            df['ATR']   = tr.rolling(window=14).mean()
+
+            obv              = (np.sign(c.diff()) * v).fillna(0).cumsum()
+            df['OBV_Slope']  = obv.diff(5) / (obv.rolling(window=20).std() + 1e-9)
+            df['Regime']     = (c - c.rolling(window=200).mean()) / (c.rolling(window=200).std() + 1e-9)
+
+            delta                    = c.diff()
+            gain                     = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss                     = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rsi                      = 100 - (100 / (1 + (gain / (loss + 1e-9))))
+            df['Divergence_Factor']  = c.diff(5) - rsi.diff(5)
+
+            body_max                 = np.maximum(o, c)
+            df['Upper_Wick_Ratio']   = (h - body_max) / (h - l + 1e-9)
+            df['EMA_5']              = c.ewm(span=5,  adjust=False).mean()
+            df['EMA_13']             = c.ewm(span=13, adjust=False).mean()
+
+            df = df.join(macro_data, how='left').ffill()
+            df.dropna(inplace=True)
+            if df.empty:
+                continue
+
+            latest        = df.iloc[-1]
+            current_price = float(latest['Close'])
+            current_atr   = float(latest['ATR'])
+
+            # ─────────────────────────────────────────────
+            # EXIT LOGIC (ถ้ากำลังถือ position อยู่)
+            # ─────────────────────────────────────────────
+            if is_holding:
+                stop_price    = avg_entry - (ATR_MULTIPLIER * current_atr)
+                target_price  = avg_entry + (ATR_TARGET_MULTIPLIER * (ATR_MULTIPLIER * current_atr))
+                ema_cross_down = latest['EMA_5'] < latest['EMA_13']
+                stop_hit       = current_price < stop_price
+
+                print(f"📌 {symbol} | Entry: ${avg_entry:.2f} | Now: ${current_price:.2f} | "
+                      f"Stop: ${stop_price:.2f} | Target: ${target_price:.2f} | Qty: {qty}")
+
+                # ── 1. PARTIAL EXIT เมื่อถึง target ──────
+                partial_done = already_partial_sold(symbol)
+
+                if current_price >= target_price and not partial_done:
+                    partial_qty = max(1, int(qty * PARTIAL_EXIT_RATIO))
+                    print(f"🎯 {symbol} ถึง Target ${target_price:.2f}! "
+                          f"Partial sell {partial_qty} หุ้น (ครึ่งนึง)")
                     api.submit_order(
-                        symbol=symbol, 
-                        qty=shares, 
-                        side='buy', 
-                        type='limit', 
-                        time_in_force='day',
-                        limit_price=target_price
+                        symbol           = symbol,
+                        qty              = partial_qty,
+                        side             = 'sell',
+                        type             = 'market',
+                        time_in_force    = 'day',
+                        client_order_id  = f'partial_target_{symbol}_{datetime.now().strftime("%Y%m%d")}',
                     )
-                    print(f"Queued Buy {symbol} x{shares} @ ${target_price}")
-                    buy_log.append(f"🟢 LIMIT BUY {symbol} x{shares} @ ${target_price} ({tier} AI: {ai_prob*100:.1f}%)")
-                except Exception as e:
-                    print(f"Buy error {symbol}: {e}")
+                    print(f"🔒 {symbol} ย้าย stop → Breakeven (${avg_entry:.2f})")
+                    # หมายเหตุ: stop ที่ breakeven จะเช็คในรอบถัดไป
+                    continue
 
-msg = f"🤖 <b>AI Trading V5.0 (Queued EOD)</b>\n"
-msg += f"📊 Regime: {regime_label}\n"
-msg += f"💰 Equity: ${account_equity:,.2f}\n\n"
+                # ── 2. FULL EXIT เมื่อ stop hit หรือ EMA cross ──
+                # ถ้า partial เคยขายไปแล้ว → stop ขยับมาที่ breakeven
+                effective_stop = max(stop_price, avg_entry) if partial_done else stop_price
 
-if buy_log:
-    msg += "<b>🛒 รายการตั้งซื้อ (Limit):</b>\n" + "\n".join(buy_log) + "\n\n"
-if sell_log:
-    msg += "<b>🛡️ รายการตั้งขาย (Trailing):</b>\n" + "\n".join(sell_log) + "\n"
+                if ema_cross_down or current_price < effective_stop:
+                    reason = "EMA 5/13 เปลี่ยนทิศ" if ema_cross_down else f"Stop (${effective_stop:.2f})"
+                    print(f"🚨 {symbol} ขายทั้งหมด ({reason})")
+                    api.submit_order(
+                        symbol        = symbol,
+                        qty           = qty,
+                        side          = 'sell',
+                        type          = 'market',
+                        time_in_force = 'day',
+                    )
+                else:
+                    print(f"✋ {symbol} ยังถือต่อ — ยังไม่ถึง stop/target/EMA cross")
 
-if not buy_log and not sell_log:
-    msg += "<i>ไม่มีแอคชั่นในวันนี้</i>"
+                continue
 
-send_telegram(msg)
-print("Done")
+            # ─────────────────────────────────────────────
+            # ENTRY LOGIC (ถ้ายังไม่มี position)
+            # ─────────────────────────────────────────────
+            if latest['EMA_5'] > latest['EMA_13']:
+                features = ['Price_vs_SMA20', 'OBV_Slope', 'ATR', 'Regime',
+                            'Divergence_Factor', 'Upper_Wick_Ratio', 'Yield10Y', 'VIX']
+                X_live   = pd.DataFrame([latest[features]])
+                ai_prob  = model.predict_proba(X_live)[:, 1][0]
+
+                if ai_prob >= 0.60:
+                    shares = calculate_shares(account_equity, ai_prob, current_atr, current_price)
+                    if shares > 0:
+                        tier         = "🔥🔥🔥" if ai_prob >= 0.90 else "🔥🔥" if ai_prob >= 0.75 else "🔥"
+                        stop_est     = current_price - (ATR_MULTIPLIER * current_atr)
+                        target_est   = current_price + (ATR_TARGET_MULTIPLIER * ATR_MULTIPLIER * current_atr)
+                        print(f"{tier} [{regime_label}] ซื้อ {symbol} {shares} หุ้น "
+                              f"(AI {ai_prob*100:.1f}%) | "
+                              f"Stop: ${stop_est:.2f} | Target: ${target_est:.2f}")
+                        api.submit_order(
+                            symbol        = symbol,
+                            qty           = shares,
+                            side          = 'buy',
+                            type          = 'market',
+                            time_in_force = 'day',
+                        )
+
+        except Exception as e:
+            print(f"⚠️ เกิดข้อผิดพลาดกับ {symbol}: {e}")
+            continue
+
+if __name__ == "__main__":
+    run_bot()
